@@ -5,24 +5,17 @@ import { callbackHandler } from "./handlers/cb.handler";
 import { dbService } from "./services/db.service";
 import { editingSession, draftStore } from "./store/memory.store";
 
-
-// 1. Ініціалізація бота
-if (!CONFIG.BOT_TOKEN) {
-  console.error("🚨 Помилка: TELEGRAM_BOT_TOKEN не знайдено в .env.local");
-  process.exit(1);
-}
-
 const bot = new Telegraf(CONFIG.BOT_TOKEN);
 
 bot.telegram.setMyCommands([
-  { command: "start", description: "Запустити бота та отримати інструкцію" },
-  {
-    command: "setup",
-    description: "Підключити Instagram (ID, Token, Username)",
-  },
+  { command: "start",    description: "Запустити бота та отримати інструкцію" },
+  { command: "setup",    description: "Підключити Instagram (ID, Token, Username)" },
   { command: "settings", description: "Показати мої поточні налаштування" },
-  { command: "help", description: "Як отримати ключі Meta" },
+  { command: "help",     description: "Як отримати ключі Meta" },
+  { command: "prompt",   description: "Замінити стандартний промпт для генерації описів" },
 ]);
+
+
 bot.help((ctx) => {
   const helpText = `
 🦾 *Доступні команди BaryFlow AI:*
@@ -39,129 +32,115 @@ bot.help((ctx) => {
 3. Отримай готову чернетку, перевір і тисни "Опублікувати".
 
 ⚠️ *Важливо:* Опис має містити ціну, щоб бот міг зробити націнку.
-  `;
+  `.trim();
 
   ctx.replyWithMarkdown(helpText);
 });
+
 bot.command("settings", async (ctx) => {
   const s = dbService.getSettings(ctx.from.id);
 
   if (!s) {
-    return ctx.reply(
-      "❌ Налаштування не знайдені. Використай /setup для реєстрації.",
-    );
+    return ctx.reply("❌ Налаштування не знайдені. Використай /setup для реєстрації.");
   }
 
   const msg = `
 ⚙️ *Твої налаштування:*
 
-👤 *Instagram:* @${s.insta_username || "Не вказано"}
-🆔 *Business ID:* \`${s.insta_biz_id || "Не вказано"}\`
+👤 *Instagram:* @${s.insta_username ?? "Не вказано"}
+🆔 *Business ID:* \`${s.insta_biz_id ?? "Не вказано"}\`
 💰 *Націнка:* ${((s.margin - 1) * 100).toFixed(0)}% (коефіцієнт ${s.margin})
 ✍️ *Стиль:* ${s.style}
 
 🔑 *Токен:* ${s.insta_token ? "✅ Встановлено" : "❌ Відсутній"}
-  `;
+  `.trim();
 
   ctx.replyWithMarkdown(msg);
 });
 
 bot.command("setup", async (ctx) => {
-  const args = ctx.message.text.split(" ");
-  if (args.length < 4) {
+  // FIX: split(" ") ламається якщо між аргументами кілька пробілів.
+  // Використовуємо slice(7).trim().split(/\s+/) для надійності.
+  const parts = ctx.message.text.slice(6).trim().split(/\s+/);
+  if (parts.length < 3 || parts[0] === "") {
     return ctx.reply("❌ Формат: /setup [BIZ_ID] [TOKEN] [USERNAME]");
   }
 
-  const [_, bizId, token, username] = args;
+  const [bizId, token, username] = parts;
 
   dbService.updateSettings(ctx.from.id, {
-    insta_biz_id: bizId,
-    insta_token: token,
+    insta_biz_id:   bizId,
+    insta_token:    token,
     insta_username: username,
   });
 
   await ctx.reply("✅ Дані Instagram збережено! Тепер спробуй надіслати пост.");
 });
 
-// 3. Реєстрація хендлерів
-// Обробка фото та альбомів
-
-bot.on("text", async (ctx, next) => {
-  const userId = ctx.from?.id;
-  if (!userId) return next();
-
-  // Перевіряємо, чи юзер зараз у стані редагування
-  const draftId = editingSession.get(userId);
-
-  if (draftId) {
-    const draft = draftStore.get(draftId);
-    if (draft) {
-      // 1. Оновлюємо текст у чернетці
-      draft.caption = ctx.message.text;
-      draftStore.set(draftId, draft);
-
-      // 2. Вимикаємо режим редагування
-      editingSession.delete(userId);
-
-      // 3. Повертаємо оновлений результат з кнопками
-      return ctx.reply("✅ Текст виправлено! Тепер публікуємо?", {
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: "🚀 Опублікувати", callback_data: `publish_${draftId}` },
-              {
-                text: "✏️ Редагувати ще раз",
-                callback_data: `edit_${draftId}`,
-              },
-            ],
-            [{ text: "🗑 Видалити", callback_data: `delete_${draftId}` }],
-          ],
-        },
-      });
-    }
-  }
-  return next();
-});
 bot.command("prompt", async (ctx) => {
   const text = ctx.message.text.replace("/prompt", "").trim();
-  
+
   if (!text) {
-    return ctx.reply("✍️ Напиши інструкцію після команди. \n\nНаприклад: `/prompt Пиши максимально коротко, без емодзі, тільки розміри та ціна.`", { parse_mode: 'Markdown' });
+    return ctx.reply(
+      "✍️ Напиши інструкцію після команди.\n\nНаприклад: `/prompt Пиши максимально коротко, без емодзі, тільки розміри та ціна.`",
+      { parse_mode: "Markdown" }
+    );
   }
 
   dbService.updatePrompt(ctx.from.id, text);
   await ctx.reply("✅ Твій кастомний стиль збережено! Тепер я буду робити описи саме так.");
 });
-// Обробка фото та альбомів
-bot.on("photo", photoHandler);
 
-// Обробка кнопок
-bot.on("callback_query", callbackHandler);
-
-// Команда старт для перевірки
 bot.command("start", (ctx) =>
-  ctx.reply("BaryFlow AI готовий до роботи! Кидай альбом з описом. 🦾"),
+  ctx.reply("BaryFlow AI готовий до роботи! Кидай альбом з описом. 🦾")
 );
 
-// 4. Запуск бота
+// Обробка редагування тексту чернетки
+bot.on("text", async (ctx, next) => {
+  const userId = ctx.from?.id;
+  if (!userId) return next();
+
+  const draftId = editingSession.get(userId);
+  if (!draftId) return next();
+
+  const draft = draftStore.get(draftId);
+  if (!draft) {
+    editingSession.delete(userId); // FIX: прибираємо "застряглу" сесію
+    return next();
+  }
+
+  draft.caption = ctx.message.text;
+  draftStore.set(draftId, draft);
+  editingSession.delete(userId);
+
+  return ctx.reply("✅ Текст виправлено! Тепер публікуємо?", {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: "🚀 Опублікувати",      callback_data: `publish_${draftId}` },
+          { text: "✏️ Редагувати ще раз", callback_data: `edit_${draftId}` },
+        ],
+        [{ text: "🗑 Видалити", callback_data: `delete_${draftId}` }],
+      ],
+    },
+  });
+});
+
+bot.on("photo", photoHandler);
+bot.on("callback_query", callbackHandler);
+
 bot
   .launch()
   .then(() => {
-    console.log("*****************************************");
+    console.log("*".repeat(41));
     console.log("🚀 BaryFlow AI успішно запущено!");
     console.log(`👤 Власник ID: ${CONFIG.ALLOWED_ID}`);
-    console.log("*****************************************");
+    console.log("*".repeat(41));
   })
   .catch((err) => {
     console.error("🚨 Помилка при запуску бота:", err);
+    process.exit(1);
   });
 
-// М'яка зупинка при вимкненні сервера
-process.once("SIGINT", () => {
-  console.log("🛑 Бот зупиняється (SIGINT)...");
-  bot.stop("SIGINT");
-});
-process.once("SIGTERM", () => {
-  console.log("🛑 Бот зупиняється (SIGTERM)...");
-  bot.stop("SIGTERM");
-});
+process.once("SIGINT",  () => { console.log("🛑 Бот зупиняється (SIGINT)...");  bot.stop("SIGINT");  });
+process.once("SIGTERM", () => { console.log("🛑 Бот зупиняється (SIGTERM)..."); bot.stop("SIGTERM"); });

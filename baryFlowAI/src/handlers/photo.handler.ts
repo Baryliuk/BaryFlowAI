@@ -2,9 +2,9 @@ import { albumCache } from "../store/memory.store";
 import { sendDraft } from "./draft.handler";
 
 export const photoHandler = async (ctx: any) => {
-  const photo = ctx.message.photo.pop();
-  const groupId = ctx.message.media_group_id;
-  const caption = ctx.message.caption;
+  const photo = ctx.message.photo.at(-1); // FIX: .at(-1) читабельніше за .pop() (не мутує масив)
+  const groupId: string | undefined = ctx.message.media_group_id;
+  const caption: string | undefined = ctx.message.caption;
 
   // 1. Якщо це поодиноке фото (не альбом)
   if (!groupId) {
@@ -23,24 +23,25 @@ export const photoHandler = async (ctx: any) => {
   const link = await ctx.telegram.getFileLink(photo.file_id);
   group.photos.push(link.href);
   group.fileIds.push(photo.file_id);
-  
-  // Опис зазвичай приходить тільки з першим або останнім фото альбому
+
+  // Опис зазвичай приходить тільки з першим фото альбому
   if (caption) group.caption = caption;
 
-  // 3. ТАЙМЕР ОЧІКУВАННЯ (Critical Fix)
+  // 3. ТАЙМЕР ОЧІКУВАННЯ
   if (group.timer) clearTimeout(group.timer);
-  
+
   group.timer = setTimeout(async () => {
+    // FIX: видаляємо з кешу ДО обробки, щоб уникнути повторного спрацювання
     const finalGroup = albumCache.get(groupId);
-    if (finalGroup) {
-      if (!finalGroup.caption) {
-        // Якщо альбом прийшов, а опису немає (буває, якщо опис загубився)
-        await ctx.reply("🚨 Альбом отримав, але опису немає. Спробуй ще раз.");
-      } else {
-        console.log(`📦 Альбом зібрано: ${finalGroup.photos.length} фото.`);
-        await sendDraft(ctx, finalGroup.photos, finalGroup.fileIds, finalGroup.caption);
-      }
-      albumCache.delete(groupId);
+    albumCache.delete(groupId); // завжди видаляємо, навіть якщо caption відсутній
+
+    if (!finalGroup) return;
+
+    if (!finalGroup.caption) {
+      await ctx.reply("🚨 Альбом отримав, але опису немає. Спробуй ще раз.");
+    } else {
+      console.log(`📦 Альбом зібрано: ${finalGroup.photos.length} фото.`);
+      await sendDraft(ctx, finalGroup.photos, finalGroup.fileIds, finalGroup.caption);
     }
-  }, 5000); // Чекаємо 5 секунд, поки Телеграм докине всі фотки
+  }, 5000);
 };

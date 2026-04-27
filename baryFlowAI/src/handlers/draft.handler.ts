@@ -11,27 +11,34 @@ export const sendDraft = async (
   rawCaption: string
 ) => {
   try {
+    // FIX: перевіряємо наявність ctx.from перед зверненням до .id
+    const userId: number | undefined = ctx.from?.id;
+    if (!userId) {
+      return ctx.reply("🚨 Не вдалося визначити користувача.");
+    }
+
     console.log(`📝 ШІ рерайт для ${photos.length} фото...`);
     await ctx.reply("⏳ ШІ чаклує над постом...");
 
-    const aiText = await getAIRewrite(rawCaption);
-    const finalDescription = aiText
-      ? aiText.slice(0, MAX_CAPTION - 30) // -30 для заголовку "<b>📝 ОСЬ ТВІЙ ПОСТ:</b>\n\n"
-      : rawCaption.slice(0, MAX_CAPTION - 30);
+    // BUG FIX: передаємо userId в getAIRewrite (у оригіналі він не передавався)
+    const aiText = await getAIRewrite(rawCaption, userId);
 
+    const finalDescription = aiText.slice(0, MAX_CAPTION - 30);
     const draftId = `${Date.now()}`;
-    draftStore.set(draftId, { photos, fileIds, caption: aiText ?? rawCaption });
+    draftStore.set(draftId, { photos, fileIds, caption: aiText });
 
+    // BUG FIX: у оригіналі callback_data мали префікси "pub_" та "del_",
+    // але cb.handler.ts очікував "publish_" та "delete_" — кнопки не працювали!
     await ctx.replyWithPhoto(fileIds[0], {
       caption: `<b>📝 ОСЬ ТВІЙ ПОСТ:</b>\n\n${finalDescription}`,
       parse_mode: "HTML",
       reply_markup: {
         inline_keyboard: [
           [
-            { text: "✅ Публікувати в Інсту", callback_data: `pub_${draftId}` },
-            { text: "✏️ Редагувати", callback_data: `edit_${draftId}` }
-          ], 
-          [{ text: "🗑 Видалити", callback_data: `del_${draftId}` }],
+            { text: "✅ Публікувати в Інсту", callback_data: `publish_${draftId}` },
+            { text: "✏️ Редагувати",           callback_data: `edit_${draftId}` },
+          ],
+          [{ text: "🗑 Видалити", callback_data: `delete_${draftId}` }],
         ],
       },
     });

@@ -15,9 +15,6 @@ export const CONFIG = {
     NAME:   required("CLOUDINARY_CLOUD_NAME"),
     PRESET: required("CLOUDINARY_UPLOAD_PRESET"),
   },
-  INSTA: {
-    BIZ_ID:   required("INSTAGRAM_BUSINESS_ID"),
-    TOKEN:    required("INSTAGRAM_ACCESS_TOKEN"),
-    USERNAME: process.env.INSTAGRAM_USERNAME || "barylux.ua", // для посилання у відповіді
-  },
+  // ВИДАЛЕНО: глобальні INSTA credentials — тепер всі дані беруться з БД (db.service)
+  // Залишати їх тут небезпечно і вводить в оману (дві різні точки правди).
 };

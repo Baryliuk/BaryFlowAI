@@ -1,18 +1,18 @@
 export interface Draft {
-  photos: string[];
+  photos:  string[];
   fileIds: string[];
   caption: string;
 }
 
 export interface AlbumCache {
-  photos: string[];
-  fileIds: string[];
+  photos:   string[];
+  fileIds:  string[];
   caption?: string;
-  timer?: NodeJS.Timeout;
+  timer?:   NodeJS.Timeout;
 }
 
 export enum BotAction {
   PUBLISH = "publish",
-  EDIT = "edit",
-  DELETE = "delete"
+  EDIT    = "edit",
+  DELETE  = "delete",
 }
