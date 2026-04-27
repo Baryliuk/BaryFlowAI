@@ -1,59 +1,73 @@
 import axios from "axios";
-import { CONFIG } from "../config/env";
 
 const BASE = `https://graph.facebook.com/v21.0`;
 
-// Polling замість хардкод-затримки
-async function waitUntilReady(containerId: string, maxAttempts = 20): Promise<void> {
+// Допоміжна функція очікування (Polling)
+async function waitUntilReady(containerId: string, token: string, maxAttempts = 20): Promise<void> {
   for (let i = 0; i < maxAttempts; i++) {
     const { data } = await axios.get(`${BASE}/${containerId}`, {
-      params: { fields: "status_code", access_token: CONFIG.INSTA.TOKEN },
+      params: { fields: "status_code", access_token: token },
     });
     if (data.status_code === "FINISHED") return;
     if (data.status_code === "ERROR") throw new Error(`Meta відхилила контейнер: ${containerId}`);
-    await new Promise(r => setTimeout(r, 3000)); // чекаємо 3 сек між спробами
+    await new Promise(r => setTimeout(r, 3000));
   }
   throw new Error("Таймаут: Meta занадто довго обробляє медіа");
 }
 
-// Одна функція для створення одного container-item
-async function createContainer(params: Record<string, unknown>): Promise<string> {
-  const { data } = await axios.post(
-    `${BASE}/${CONFIG.INSTA.BIZ_ID}/media`,
-    { ...params, access_token: CONFIG.INSTA.TOKEN }
-  );
-  return data.id;
-}
+// Тепер функція приймає третій параметр — об'єкт налаштувань юзера
+export const postCarousel = async (
+  photoUrls: string[], 
+  caption: string, 
+  user: { bizId: string; token: string; username: string } 
+): Promise<string> => {
+  
+  const publishUrl = `${BASE}/${user.bizId}/media`;
+  const publishFinalUrl = `${BASE}/${user.bizId}/media_publish`;
 
-export const postCarousel = async (photoUrls: string[], caption: string): Promise<string> => {
-  const publishUrl = `${BASE}/${CONFIG.INSTA.BIZ_ID}/media_publish`;
+  // Внутрішня функція для створення контейнерів з кастомним токеном
+  const createContainer = async (params: Record<string, unknown>): Promise<string> => {
+    const { data } = await axios.post(publishUrl, { 
+      ...params, 
+      access_token: user.token 
+    });
+    return data.id;
+  };
 
   // --- ОДИНОЧНЕ ФОТО ---
   if (photoUrls.length === 1) {
-    console.log("📸 Публікація одиночного фото...");
+    console.log(`📸 Фото для @${user.username}...`);
     const containerId = await createContainer({ image_url: photoUrls[0], caption });
-    await waitUntilReady(containerId);
-    await axios.post(publishUrl, { creation_id: containerId, access_token: CONFIG.INSTA.TOKEN });
-    return `https://www.instagram.com/${CONFIG.INSTA.USERNAME}/`;
+    
+    await waitUntilReady(containerId, user.token);
+    
+    await axios.post(publishFinalUrl, { 
+      creation_id: containerId, 
+      access_token: user.token 
+    });
+    return `https://www.instagram.com/${user.username}/`;
   }
 
-  // --- КАРУСЕЛЬ: паралельно створюємо всі items ---
-  console.log(`🎠 Карусель: ${photoUrls.length} фото, завантаження паралельно...`);
+  // --- КАРУСЕЛЬ ---
+  console.log(`🎠 Карусель для @${user.username}: ${photoUrls.length} фото...`);
+  
   const itemIds = await Promise.all(
     photoUrls.map(url => createContainer({ image_url: url, is_carousel_item: true }))
   );
 
-  // Carousel container
   const carouselId = await createContainer({
     media_type: "CAROUSEL",
-    children: itemIds,
+    children: itemIds, // Передаємо масив ID
     caption,
   });
 
-  console.log("⏳ Чекаємо готовності каруселі від Meta...");
-  await waitUntilReady(carouselId);
+  await waitUntilReady(carouselId, user.token);
 
-  await axios.post(publishUrl, { creation_id: carouselId, access_token: CONFIG.INSTA.TOKEN });
-  console.log("✅ Карусель опублікована.");
-  return `https://www.instagram.com/${CONFIG.INSTA.USERNAME}/`;
+  await axios.post(publishFinalUrl, { 
+    creation_id: carouselId, 
+    access_token: user.token 
+  });
+  
+  console.log(`✅ Карусель опублікована в @${user.username}`);
+  return `https://www.instagram.com/${user.username}/`;
 };

@@ -12,6 +12,7 @@ export interface AlbumCache {
 }
 
 export enum BotAction {
-  PUBLISH = "pub",
-  DELETE = "del",
+  PUBLISH = "publish",
+  EDIT = "edit",
+  DELETE = "delete"
 }

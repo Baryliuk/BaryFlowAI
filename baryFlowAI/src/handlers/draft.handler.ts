@@ -27,7 +27,10 @@ export const sendDraft = async (
       parse_mode: "HTML",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "✅ Публікувати в Інсту", callback_data: `pub_${draftId}` }],
+          [
+            { text: "✅ Публікувати в Інсту", callback_data: `pub_${draftId}` },
+            { text: "✏️ Редагувати", callback_data: `edit_${draftId}` }
+          ], 
           [{ text: "🗑 Видалити", callback_data: `del_${draftId}` }],
         ],
       },
