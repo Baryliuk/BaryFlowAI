@@ -51,6 +51,7 @@ bot.command("settings", async (ctx) => {
 🆔 *Business ID:* \`${s.insta_biz_id ?? "Не вказано"}\`
 💰 *Націнка:* ${((s.margin - 1) * 100).toFixed(0)}% (коефіцієнт ${s.margin})
 ✍️ *Стиль:* ${s.style}
+💰 *Базова націнка:* **${(s.margin * 100 - 100).toFixed(0)}%** (коефіцієнт ${s.margin})
 
 🔑 *Токен:* ${s.insta_token ? "✅ Встановлено" : "❌ Відсутній"}
   `.trim();
@@ -89,6 +90,26 @@ bot.command("prompt", async (ctx) => {
 
   dbService.updatePrompt(ctx.from.id, text);
   await ctx.reply("✅ Твій кастомний стиль збережено! Тепер я буду робити описи саме так.");
+});
+
+bot.command("margin", async (ctx) => {
+  const text = ctx.message.text.replace("/margin", "").trim();
+  const value = parseFloat(text);
+
+  if (isNaN(value) || value < 1.0 || value > 5.0) {
+    return ctx.reply(
+      "✍️ Вкажи коефіцієнт націнки після команди.\n\n" +
+      "Наприклад:\n" +
+      "`/margin 1.3` — це +30%\n" +
+      "`/margin 1.5` — це +50%\n\n" +
+      "*Примітка:* Ця націнка застосується до товарів дорожче 1000 грн. Для дешевших товарів діють автоматичні правила (50% та 35%).",
+      { parse_mode: "Markdown" }
+    );
+  }
+
+  dbService.updateSettings(ctx.from.id, { margin: value });
+  
+  await ctx.reply(`✅ Базову націнку оновлено: **${(value * 100 - 100).toFixed(0)}%** (коефіцієнт ${value})`, { parse_mode: "Markdown" });
 });
 
 bot.command("start", (ctx) =>

@@ -7,42 +7,50 @@ const openai = new OpenAI({
   baseURL: "https://integrate.api.nvidia.com/v1",
 });
 
-// BUG FIX: у оригіналі draft.handler.ts викликав getAIRewrite(rawCaption) без userId,
-// але функція вже мала сигнатуру з userId. Додано скрізь — і тут, і в draft.handler.ts.
-export const getAIRewrite = async (
-  originalText: string,
-  userId: number
-): Promise<string> => {
+export const getAIRewrite = async (originalText: string, userId: number): Promise<string> => {
   const settings = dbService.getSettings(userId);
   const userPrompt = settings?.custom_prompt ?? null;
-  const margin: number = settings?.margin ?? 1.2;
 
-  // Пошук ціни: беремо найбільше число > 200 (щоб не вхопити артикул чи розмір)
+  // 1. Пошук ціни: від 250 до 3500 грн (щоб ігнорувати артикули типу 7801)
   const allNumbers = originalText.match(/\d{3,5}/g);
-  const validPrices = allNumbers ? allNumbers.map(Number).filter((n) => n > 200) : [];
+  const validPrices = allNumbers 
+    ? allNumbers.map(Number).filter((n) => n >= 250 && n <= 3500) 
+    : [];
+  
   const originalPrice = validPrices.length > 0 ? Math.max(...validPrices) : 0;
 
-  // FIX: margin тепер береться з налаштувань юзера (а не hardcode 1.3/1.2)
   let finalPriceStr = "уточнюйте у Direct";
   if (originalPrice > 0) {
-    finalPriceStr = `${Math.round(originalPrice * margin)} грн`;
+    let activeMargin: number;
+    if (originalPrice <= 500) {
+      activeMargin = 1.5; // +50%
+    } else if (originalPrice <= 1000) {
+      activeMargin = 1.35; // +35%
+    } else {
+      activeMargin = settings?.margin ?? 1.25; // Базова або дефолт
+    }
+    finalPriceStr = `${Math.round(originalPrice * activeMargin)} грн`;
   }
 
   const systemBase = userPrompt
-    ? `Ти SMM-спеціаліст. Оформи пост за вказівкою клієнта: "${userPrompt}"`
-    : `Ти топовий SMM преміальних магазинів. Використовуй елітний стиль, ▫️ для списку, назву жирним.`;
+    ? `Ти SMM-спеціаліст. Твоє завдання оформити пост: "${userPrompt}"`
+    : `Ти топовий SMM преміальних магазинів. Стиль елітний, структура чітка.`;
 
   const finalInstructions = `
 ${systemBase}
 
-ОБОВ'ЯЗКОВІ ТЕХНІЧНІ ПРАВИЛА:
-- ЦІНА ДЛЯ ПОСТА: **${finalPriceStr}** (Встав її саме так).
-- Очищення: Видали всі посилання, @юзернейми та згадки про "дроп/опт".
-- Мова: Українська.
-- Хештеги: 7-10 релевантних у кінці.
+### СУВОРІ ТЕХНІЧНІ ПРАВИЛА (ВИКОНУВАТИ БЕЗЗАПЕРЕЧНО):
+1. **ФОРМАТ ВІДПОВІДІ**: Видавай ТІЛЬКИ текст поста. ЗАБОРОНЕНО будь-які вступні фрази ("Ось ваш пост", "Я виправив ціну"). Починай одразу з назви.
+2. **ЦІНА ТОВАРУ**: Твоя єдина ціна — **${finalPriceStr}**. ЗАБОРОНЕНО використовувати ціни з вхідного тексту. 
+3. **МОВА ТА ГРАМАТИКА**: Тільки правильна українська! Слідкуй за родами (Жіноче плаття, чоловіче худі).
+4. **ФІЛЬТРАЦІЯ**: Видали всі посилання, @юзернейми та згадки про дроп/опт.
+5. **ОБОВ'ЯЗКОВІ ХЕШТЕГИ**: В самому кінці додай:
+#barylux #одягукраїна #купитиодягукраїна #інстамагазин #стильнийодяг
++ додай 3-4 релевантних до товару.
+
+6. **ВІЗУАЛ**: Назва жирним КАПСОМ (через **), характеристики через ▫️.
 `.trim();
 
-  // FIX: додано try/catch — якщо AI упав, повертаємо оригінальний текст
   try {
     const res = await openai.chat.completions.create({
       model: "meta/llama-3.3-70b-instruct",
@@ -53,10 +61,16 @@ ${systemBase}
       temperature: 0.3,
     });
 
-    return res.choices[0]?.message?.content ?? originalText;
+    let content = res.choices[0]?.message?.content ?? originalText;
+    
+    // Додатковий фікс: якщо ШІ все одно написав "Ось ваш пост", обрізаємо до першої зірочки
+    if (content.includes("**") && content.indexOf("**") > 5) {
+      content = content.substring(content.indexOf("**"));
+    }
+
+    return content;
   } catch (err: any) {
     console.error("🚨 AI Service error:", err.message);
-    // Graceful degradation: повертаємо оригінал замість краша
     return originalText;
   }
 };
