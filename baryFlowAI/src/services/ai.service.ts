@@ -21,15 +21,7 @@ export const getAIRewrite = async (originalText: string, userId: number): Promis
 
   let finalPriceStr = "уточнюйте у Direct";
   if (originalPrice > 0) {
-    let activeMargin: number;
-    if (originalPrice <= 500) {
-      activeMargin = 1.5; // +50%
-    } else if (originalPrice <= 1000) {
-      activeMargin = 1.35; // +35%
-    } else {
-      activeMargin = settings?.margin ?? 1.25; // Базова або дефолт
-    }
-    finalPriceStr = `${Math.round(originalPrice * activeMargin)} грн`;
+    finalPriceStr = ` ${originalPrice + 299} грн`;
   }
 
   const systemBase = userPrompt
@@ -45,7 +37,7 @@ ${systemBase}
 3. **МОВА ТА ГРАМАТИКА**: Тільки правильна українська! Слідкуй за родами (Жіноче плаття, чоловіче худі).
 4. **ФІЛЬТРАЦІЯ**: Видали всі посилання, @юзернейми та згадки про дроп/опт.
 5. **ОБОВ'ЯЗКОВІ ХЕШТЕГИ**: В самому кінці додай:
-#barylux #одягукраїна #купитиодягукраїна #інстамагазин #стильнийодяг
+#barylux #одягукраїна #купитиодягукраїна #інстамагазин #стильнийодяг #чоловічийодяг #стильнийодяг
 + додай 3-4 релевантних до товару.
 
 6. **ВІЗУАЛ**: Назва жирним КАПСОМ (через **), характеристики через ▫️.

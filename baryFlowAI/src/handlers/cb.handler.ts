@@ -64,7 +64,7 @@ export const callbackHandler = async (ctx: any) => {
       const link = await postCarousel(urls, draft.caption, {
         bizId:    userSettings.insta_biz_id,
         token:    userSettings.insta_token,
-        username: userSettings.insta_username,
+        username: userSettings.insta_username ?? "",
       });
 
       await updateStatus(`✅ Опубліковано!\n🔗 ${link}`);

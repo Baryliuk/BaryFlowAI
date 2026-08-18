@@ -11,24 +11,23 @@ export const sendDraft = async (
   rawCaption: string
 ) => {
   try {
-    // FIX: перевіряємо наявність ctx.from перед зверненням до .id
+
     const userId: number | undefined = ctx.from?.id;
     if (!userId) {
       return ctx.reply("🚨 Не вдалося визначити користувача.");
     }
 
     console.log(`📝 ШІ рерайт для ${photos.length} фото...`);
-    await ctx.reply("⏳ ШІ чаклує над постом...");
+    await ctx.reply("⏳Post creating ...");
 
-    // BUG FIX: передаємо userId в getAIRewrite (у оригіналі він не передавався)
+
     const aiText = await getAIRewrite(rawCaption, userId);
 
     const finalDescription = aiText.slice(0, MAX_CAPTION - 30);
     const draftId = `${Date.now()}`;
     draftStore.set(draftId, { photos, fileIds, caption: aiText });
 
-    // BUG FIX: у оригіналі callback_data мали префікси "pub_" та "del_",
-    // але cb.handler.ts очікував "publish_" та "delete_" — кнопки не працювали!
+
     await ctx.replyWithPhoto(fileIds[0], {
       caption: `<b>📝 ОСЬ ТВІЙ ПОСТ:</b>\n\n${finalDescription}`,
       parse_mode: "HTML",
