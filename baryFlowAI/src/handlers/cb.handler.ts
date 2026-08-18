@@ -1,79 +1,110 @@
+import { Context } from "telegraf";
 import { uploadAllPhotos } from "../services/cloud.service";
 import { postCarousel } from "../services/insta.service";
 import { draftStore, editingSession } from "../store/memory.store";
 import { BotAction } from "../types";
 import { dbService } from "../services/db.service";
 
-export const callbackHandler = async (ctx: any) => {
-  await ctx.answerCbQuery().catch(() => {});
+interface ApiErrorResponse {
+  response?: {
+    data?: {
+      error?: {
+        message?: string;
+      };
+    };
+  };
+}
 
-  const data: string = ctx.callbackQuery?.data ?? "";
+const updateStatusMessage = async (ctx: Context, text: string): Promise<void> => {
+  try {
+    await ctx.editMessageCaption(text);
+  } catch (err: unknown) {
+    if (err instanceof Error && err.message.includes("message is not modified")) {
+      return;
+    }
+    try {
+      await ctx.editMessageText(text);
+    } catch {
+      // Ігноруємо, якщо тип повідомлення не підтримує редагування тексту
+    }
+  }
+};
+
+export const callbackHandler = async (ctx: Context): Promise<void> => {
+  // Файримо answerCbQuery одразу, не чекаючи виконання handler'а
+  ctx.answerCbQuery().catch(() => {});
+
+  if (!ctx.callbackQuery || !("data" in ctx.callbackQuery)) return;
+
+  const data = ctx.callbackQuery.data;
   const underscoreIdx = data.indexOf("_");
-
-  // FIX: захист від рядків без підкреслення
   if (underscoreIdx === -1) return;
 
   const action = data.slice(0, underscoreIdx);
   const id = data.slice(underscoreIdx + 1);
+  const userId = ctx.from?.id;
 
-  const updateStatus = async (text: string) => {
-    try {
-      await ctx.editMessageCaption(text).catch(async () => {
-        await ctx.editMessageText(text).catch(() => {});
-      });
-    } catch (err) {
-      console.error("Помилка оновлення статусу:", err);
-    }
-  };
+  if (!userId) return;
 
-  // BUG FIX: у оригіналі порівнювали action === "delete" АБО action === BotAction.DELETE,
-  // але BotAction.DELETE = "delete" — тобто умова дублювалась і вводила в оману.
-  // Тепер порівнюємо тільки з enum-значеннями (єдине джерело правди).
   if (action === BotAction.DELETE) {
     draftStore.delete(id);
-    return updateStatus("🗑 Видалено.");
+    await updateStatusMessage(ctx, "🗑 Видалено.");
+    return;
   }
 
   const draft = draftStore.get(id);
   if (!draft) {
-    return ctx.reply("🚨 Чернетка не знайдена. Надішли пост заново.");
+    await ctx.reply("🚨 Чернетка не знайдена. Надішли пост заново.");
+    return;
   }
 
   if (action === BotAction.EDIT) {
-    editingSession.set(ctx.from.id, id);
-    await ctx.sendChatAction("typing");
-    return ctx.reply("✍️ Надішли новий текст для цього поста. Я його запам'ятаю.");
+    editingSession.set(userId, id);
+    // Fire-and-forget: не блокуємо Event Loop чеканням чат-екшну
+    ctx.sendChatAction("typing").catch(() => {});
+    await ctx.reply("✍️ Надішли новий текст для цього поста. Я його запам'ятаю.");
+    return;
   }
 
   if (action === BotAction.PUBLISH) {
-    const userSettings = dbService.getSettings(ctx.from.id);
+    const userSettings = dbService.getSettings(userId);
 
     if (!userSettings?.insta_token || !userSettings?.insta_biz_id) {
-      return ctx.reply("🚨 Спочатку налаштуй акаунт через /setup");
+      await ctx.reply("🚨 Спочатку налаштуй акаунт через /setup");
+      return;
     }
 
-    await ctx.sendChatAction("upload_photo");
-    await updateStatus("🚀 Завантажую фото...");
+    ctx.sendChatAction("upload_photo").catch(() => {});
+    await updateStatusMessage(ctx, "🚀 Завантажую фото...");
 
     try {
       const urls = await uploadAllPhotos(draft.photos);
 
-      await ctx.sendChatAction("upload_photo");
-      await updateStatus(`⏳ Фото готові. Публікую в @${userSettings.insta_username}...`);
+      ctx.sendChatAction("upload_photo").catch(() => {});
+      await updateStatusMessage(ctx, "⏳ Фото готові. Публікую в instagram...");
 
       const link = await postCarousel(urls, draft.caption, {
-        bizId:    userSettings.insta_biz_id,
-        token:    userSettings.insta_token,
+        bizId: userSettings.insta_biz_id,
+        token: userSettings.insta_token,
         username: userSettings.insta_username ?? "",
       });
 
-      await updateStatus(`✅ Опубліковано!\n🔗 ${link}`);
+      await updateStatusMessage(ctx, `✅ Опубліковано!\n🔗 ${link}`);
       draftStore.delete(id);
-    } catch (e: any) {
-      const raw: string =
-        e.response?.data?.error?.message ?? e.message ?? "Невідома помилка";
-      console.error("🚨 PUBLISH ERROR:", raw);
-      await ctx.reply(`🚨 Помилка публікації: ${raw.slice(0, 500)}`);
+    } catch (e: unknown) {
+      let errorMessage = "Невідома помилка";
+
+      if (e instanceof Error) {
+        errorMessage = e.message;
+      }
+      
+      const apiErr = e as ApiErrorResponse;
+      if (apiErr.response?.data?.error?.message) {
+        errorMessage = apiErr.response.data.error.message;
+      }
+
+      console.error("🚨 PUBLISH ERROR:", errorMessage);
+      await ctx.reply(`🚨 Помилка публікації: ${errorMessage.slice(0, 500)}`);
     }
   }
 };

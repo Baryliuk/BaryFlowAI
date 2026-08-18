@@ -1,90 +1,159 @@
 import axios from "axios";
 
-const BASE = `https://graph.facebook.com/v21.0`;
+const GRAPH_API_BASE = "https://graph.facebook.com/v21.0";
+const REQUEST_TIMEOUT_MS = 15_000;
 
+export interface InstagramUserConfig {
+  bizId: string;
+  token: string;
+  username: string;
+}
+
+interface ContainerStatusResponse {
+  status_code: "FINISHED" | "IN_PROGRESS" | "ERROR" | "EXPIRED";
+  status?: string;
+  id: string;
+}
+
+interface ContainerCreateResponse {
+  id: string;
+}
+
+/**
+ * Очікує готовності медіа-контейнера в Meta Graph API
+ */
 async function waitUntilReady(
   containerId: string,
   token: string,
-  maxAttempts = 20
+  maxAttempts = 20,
+  intervalMs = 3000
 ): Promise<void> {
-  for (let i = 0; i < maxAttempts; i++) {
-    const { data } = await axios.get(`${BASE}/${containerId}`, {
-      params: { fields: "status_code,status", access_token: token },
-    });
-
-    if (data.status_code === "FINISHED") return;
-
-    // FIX: логуємо статус при помилці для легшого дебагу
-    if (data.status_code === "ERROR") {
-      throw new Error(
-        `Meta відхилила контейнер ${containerId}. Статус: ${data.status ?? "ERROR"}`
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const { data } = await axios.get<ContainerStatusResponse>(
+        `${GRAPH_API_BASE}/${containerId}`,
+        {
+          params: { fields: "status_code,status", access_token: token },
+          timeout: REQUEST_TIMEOUT_MS,
+        }
       );
+
+      if (data.status_code === "FINISHED") {
+        return;
+      }
+
+      if (data.status_code === "ERROR" || data.status_code === "EXPIRED") {
+        throw new Error(
+          `Meta відхилила контейнер ${containerId}. Статус: ${data.status ?? data.status_code}`
+        );
+      }
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err) && err.response?.data?.error?.message) {
+        throw new Error(`Meta API Error (${containerId}): ${err.response.data.error.message}`);
+      }
+      if (err instanceof Error && err.message.startsWith("Meta відхилила")) {
+        throw err;
+      }
+      // При мережевому мигтінні продовжуємо спроби polling
+      console.warn(`⚠️ Помилка перевірки статусу (спроба ${attempt + 1}):`, err);
     }
 
-    await new Promise((r) => setTimeout(r, 3000));
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
+
   throw new Error(
-    `Таймаут: Meta обробляє медіа понад ${(maxAttempts * 3)} секунд`
+    `Таймаут: Meta обробляє медіа ${containerId} понад ${(maxAttempts * intervalMs) / 1000} секунд`
   );
 }
 
 export const postCarousel = async (
   photoUrls: string[],
   caption: string,
-  user: { bizId: string; token: string; username: string }
+  user: InstagramUserConfig
 ): Promise<string> => {
-  // FIX: Instagram дозволяє максимум 10 фото у каруселі
+  if (!photoUrls.length) {
+    throw new Error("Масив photoUrls порожній.");
+  }
+
   if (photoUrls.length > 10) {
     throw new Error("Instagram дозволяє максимум 10 фото у каруселі.");
   }
 
-  const publishUrl      = `${BASE}/${user.bizId}/media`;
-  const publishFinalUrl = `${BASE}/${user.bizId}/media_publish`;
+  const publishUrl = `${GRAPH_API_BASE}/${user.bizId}/media`;
+  const publishFinalUrl = `${GRAPH_API_BASE}/${user.bizId}/media_publish`;
 
-  const createContainer = async (params: Record<string, unknown>): Promise<string> => {
-    const { data } = await axios.post(publishUrl, {
-      ...params,
-      access_token: user.token,
-    });
-    return data.id as string;
+  const createContainer = async (payload: Record<string, unknown>): Promise<string> => {
+    try {
+      const { data } = await axios.post<ContainerCreateResponse>(
+        publishUrl,
+        {
+          ...payload,
+          access_token: user.token,
+        },
+        { timeout: REQUEST_TIMEOUT_MS }
+      );
+
+      if (!data?.id) {
+        throw new Error("Meta не повернула ID контейнера.");
+      }
+
+      return data.id;
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err) && err.response?.data?.error?.message) {
+        throw new Error(`Meta Container Creation Failed: ${err.response.data.error.message}`);
+      }
+      throw err;
+    }
   };
 
-  // --- ОДИНОЧНЕ ФОТО ---
+  // --- 1. ОДИНОЧНЕ ФОТО ---
   if (photoUrls.length === 1) {
-    console.log(`📸 Публікую одне фото для @${user.username}...`);
+    console.log(`📸 Публікую поодиноке фото для @${user.username}...`);
     const containerId = await createContainer({ image_url: photoUrls[0], caption });
     await waitUntilReady(containerId, user.token);
-    await axios.post(publishFinalUrl, { creation_id: containerId, access_token: user.token });
+
+    await axios.post(
+      publishFinalUrl,
+      { creation_id: containerId, access_token: user.token },
+      { timeout: REQUEST_TIMEOUT_MS }
+    );
+
     return `https://www.instagram.com/${user.username}/`;
   }
 
-  // --- КАРУСЕЛЬ ---
+  // --- 2. КАРУСЕЛЬ (ПАРАЛЕЛЬНА ОБРОБКА) ---
   console.log(`🎠 Карусель для @${user.username}: ${photoUrls.length} фото...`);
 
-  // FIX: у оригіналі всі контейнери створювались паралельно через Promise.all,
-  // але потім одразу без waitUntilReady для кожного окремого item.
-  // Meta може відхилити carousel якщо items ще не FINISHED.
-  // Тепер чекаємо готовності кожного item перед створенням carousel-контейнера.
-  const itemIds: string[] = [];
-  for (const url of photoUrls) {
-    const itemId = await createContainer({ image_url: url, is_carousel_item: true });
-    await waitUntilReady(itemId, user.token);
-    itemIds.push(itemId);
-  }
+  // Оптимізація: Створюємо ВСІ дочірні контейнери ПАРАЛЕЛЬНО
+  const itemIds = await Promise.all(
+    photoUrls.map((url) =>
+      createContainer({
+        image_url: url,
+        is_carousel_item: true,
+      })
+    )
+  );
 
+  // Оптимізація: Чекаємо готовності ВСІХ дочірніх контейнерів ПАРАЛЕЛЬНО
+  await Promise.all(itemIds.map((itemId) => waitUntilReady(itemId, user.token)));
+
+  // Створюємо батьківський контейнер каруселі
   const carouselId = await createContainer({
     media_type: "CAROUSEL",
-    children: itemIds.join(","), // FIX: Meta очікує рядок через кому, не масив
+    children: itemIds, // Graph API v21.0 приймає масив рядків
     caption,
   });
 
+  // Чекаємо готовності самого карусельного контейнера
   await waitUntilReady(carouselId, user.token);
 
-  await axios.post(publishFinalUrl, {
-    creation_id: carouselId,
-    access_token: user.token,
-  });
+  // Фінальна публікація
+  await axios.post(
+    publishFinalUrl,
+    { creation_id: carouselId, access_token: user.token },
+    { timeout: REQUEST_TIMEOUT_MS }
+  );
 
-  console.log(`✅ Карусель опублікована в @${user.username}`);
+  console.log(`✅ Карусель успішно опубліковано в @${user.username}`);
   return `https://www.instagram.com/${user.username}/`;
 };
