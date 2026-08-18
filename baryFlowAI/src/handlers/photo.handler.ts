@@ -2,6 +2,7 @@ import { Context } from "telegraf";
 import { Message, Update } from "telegraf/types";
 import { albumCache } from "../store/memory.store";
 import { sendDraft } from "./draft.handler";
+import { getAIRewrite } from "../services/ai.service"; // 1. Додано сервіс ШІ
 
 export interface AlbumItem {
   messageId: number;
@@ -22,24 +23,37 @@ export const photoHandler = async (ctx: PhotoContext): Promise<void> => {
   const photos = ctx.message.photo;
   if (!photos || photos.length === 0) return;
 
-  // Беремо фото найвищої якості (останній елемент масиву)
   const photo = photos[photos.length - 1];
   const groupId = ctx.message.media_group_id;
   const caption = ctx.message.caption;
   const messageId = ctx.message.message_id;
+  const userId = ctx.from?.id ?? 0;
 
-  // 1. Поодиноке фото (не альбом)
+  // 1. ПООДИНОКЕ ФОТО
   if (!groupId) {
     if (!caption) {
       await ctx.reply("🚨 Додай опис до фото.");
       return;
     }
-    const link = await ctx.telegram.getFileLink(photo.file_id);
-    await sendDraft(ctx as Context<Update>, [link.href], [photo.file_id], caption);
+
+    const statusMsg = await ctx.reply("🤖 Обробляю опис через ШІ та розраховую ціну...");
+
+    try {
+      const link = await ctx.telegram.getFileLink(photo.file_id);
+      
+      // ГЕНЕРАЦІЯ ОПИСУ ЧЕРЕЗ ШІ
+      const aiCaption = await getAIRewrite(caption, userId);
+
+      await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
+      await sendDraft(ctx as Context<Update>, [link.href], [photo.file_id], aiCaption);
+    } catch (err) {
+      console.error("🚨 Помилка обробки поодинокого фото:", err);
+      await ctx.reply("❌ Помилка при обробці ШІ.").catch(() => {});
+    }
     return;
   }
 
-  // 2. АЛЬБОМ: Зберігаємо дані СИНХРОННО без чекання мережі
+  // 2. АЛЬБОМ: Накопичення в кеш
   let group = albumCache.get(groupId) as AlbumGroup | undefined;
   if (!group) {
     group = { items: [] };
@@ -51,27 +65,27 @@ export const photoHandler = async (ctx: PhotoContext): Promise<void> => {
     group.caption = caption;
   }
 
-  // 3. Скидаємо дебаунс-таймер
+  // 3. ДЕБАУНС-ТАЙМЕР
   if (group.timer) {
     clearTimeout(group.timer);
   }
 
   group.timer = setTimeout(async () => {
     const finalGroup = albumCache.get(groupId) as AlbumGroup | undefined;
-    albumCache.delete(groupId); // Чистимо кеш негайно
+    albumCache.delete(groupId); // Чистимо кеш
 
     if (!finalGroup) return;
 
-    try {
-      if (!finalGroup.caption) {
-        await ctx.reply("🚨 Альбом отримано, але опис відсутній. Спробуй ще раз.");
-        return;
-      }
+    if (!finalGroup.caption) {
+      await ctx.reply("🚨 Альбом отримано, але опис відсутній. Спробуй ще раз.");
+      return;
+    }
 
-      // Сортуємо за хронологією відправки
+    const statusMsg = await ctx.reply("🤖 Обробляю альбом та рерачу опис...");
+
+    try {
       finalGroup.items.sort((a, b) => a.messageId - b.messageId);
 
-      // Паралельно запитуємо лінки для всіх фото одночасно
       const photoLinks = await Promise.all(
         finalGroup.items.map(async (item) => {
           const link = await ctx.telegram.getFileLink(item.fileId);
@@ -81,8 +95,13 @@ export const photoHandler = async (ctx: PhotoContext): Promise<void> => {
 
       const fileIds = finalGroup.items.map((item) => item.fileId);
 
-      console.log(`📦 Альбом зібрано та відсортовано: ${photoLinks.length} фото.`);
-      await sendDraft(ctx as Context<Update>, photoLinks, fileIds, finalGroup.caption);
+      // ГЕНЕРАЦІЯ ОПИСУ ЧЕРЕЗ ШІ ДЛЯ АЛЬБОМУ
+      const aiCaption = await getAIRewrite(finalGroup.caption, userId);
+
+      console.log(`📦 Альбом зібрано (${photoLinks.length} фото), ШІ-опис оброблено.`);
+
+      await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
+      await sendDraft(ctx as Context<Update>, photoLinks, fileIds, aiCaption);
     } catch (err: unknown) {
       console.error("🚨 Помилка обробки альбому в таймері:", err);
       await ctx.reply("🚨 Не вдалося обробити фотографії альбому.").catch(() => {});
