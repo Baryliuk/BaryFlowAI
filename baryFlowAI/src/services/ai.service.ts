@@ -46,13 +46,11 @@ export const getAIRewrite = async (originalText: string, userId: number): Promis
   const originalPrice = extractOriginalPrice(originalText);
   const finalPriceStr = originalPrice > 0 ? `${originalPrice + MARGIN_UAH} грн` : "уточнюйте у Direct";
 
-  const systemBase = userPrompt
-    ? `Ти SMM-спеціаліст. Твоє завдання оформити пост за інструкцією користувача: "${userPrompt}"`
-    : `Ти топовий SMM преміальних магазинів одягу. Стиль елітний, структура чітка.`;
+const systemBase = userPrompt
+    ? `Ти SMM-спеціаліст. Твоє завдання оформити пост: "${userPrompt}"`
+    : `Ти топовий SMM преміальних магазинів. Стиль елітний, структура чітка.`;
 
-  // КЛЮЧОВИЙ ФІКС: Оскільки в draft.handler виводиться parse_mode: "HTML",
-  // ми вимагаємо від ШІ саме HTML-теги (<b>назва</b>), а не Markdown (**назва**).
- const finalInstructions = `
+  const finalInstructions = `
 ${systemBase}
 
 ### СУВОРІ ТЕХНІЧНІ ПРАВИЛА (ВИКОНУВАТИ БЕЗЗАПЕРЕЧНО):
