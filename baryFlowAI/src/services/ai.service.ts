@@ -2,7 +2,6 @@ import OpenAI from "openai";
 import { CONFIG } from "../config/env";
 import { dbService } from "./db.service";
 
-const MARGIN_UAH = 299;
 const REQUEST_TIMEOUT_MS = 20_000;
 
 const openai = new OpenAI({
@@ -77,7 +76,7 @@ export const getAIRewrite = async (
   const originalPrice = extractOriginalPrice(originalText);
   const finalPriceStr =
     originalPrice > 0
-      ? `${originalPrice + MARGIN_UAH} ГРН`
+      ? `${originalPrice + 299} ГРН`
       : "ціну уточнюйте у Дірект";
 
   const systemBase = userPrompt
