@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { CONFIG } from "../config/env";
 import { dbService } from "./db.service";
 
+const MARGIN_UAH = 299;
 const REQUEST_TIMEOUT_MS = 20_000;
 
 const openai = new OpenAI({
@@ -11,30 +12,32 @@ const openai = new OpenAI({
 });
 
 /**
- * Розумний витяг ціни з урахуванням фільтрації артикулів та розмірів
+ * Точний витяг ціни постачальника (зокрема із "ДРОП 1150 ГРН", "ОПТ", "Ціна: 1150" тощо)
  */
 const extractOriginalPrice = (text: string): number => {
-  // 1. Очищаємо текст від артикулів і кодів товару, щоб не зчитати "Арт 1200" як ціну
+  // 1. Прибираємо артикули, щоб "Арт 1200" не зчиталося як ціна
   const cleanText = text.replace(/(?:арт|артикул|код)\s*[:\.\-]?\s*\d+/gi, "");
 
-  // 2. Пошук чисел біля цінових маркерів (ціна, вартість, грн, uah)
-  const explicitPriceRegex =
-    /(?:ціна|вартість|коштує|грн|uah|\$)\s*[:\-]?\s*(\d{3,4})|(\d{3,4})\s*(?:грн|uah|\$)/gi;
-  const explicitMatches: number[] = [];
+  // 2. Пошук цінових маркерів (включаючи ДРОП, ОПТ, ГРН, UAH)
+  const priceRegex =
+    /(?:ціна|вартість|коштує|дроп|опт|гурт|грн|uah|\$)\s*[:\.\-—]?\s*(\d{3,4})|(\d{3,4})\s*(?:грн|uah|\$|дроп|опт)/gi;
 
+  const matches: number[] = [];
   let match: RegExpExecArray | null;
-  while ((match = explicitPriceRegex.exec(cleanText)) !== null) {
+
+  while ((match = priceRegex.exec(cleanText)) !== null) {
     const val = Number(match[1] || match[2]);
     if (val >= 250 && val <= 4000) {
-      explicitMatches.push(val);
+      matches.push(val);
     }
   }
 
-  if (explicitMatches.length > 0) {
-    return Math.max(...explicitMatches);
+  if (matches.length > 0) {
+    // Якщо знайшли кілька цін — беремо найменшу як базу для дропу
+    return Math.min(...matches);
   }
 
-  // 3. Фолбек: шукаємо будь-які окремі числа в розумному ціновому діапазоні
+  // 3. Фолбек: шукаємо будь-які окремі числа в діапазоні 250-4000
   const rawNumbers = cleanText.match(/\b\d{3,4}\b/g);
   if (!rawNumbers) return 0;
 
@@ -42,26 +45,41 @@ const extractOriginalPrice = (text: string): number => {
     .map(Number)
     .filter((n) => n >= 250 && n <= 4000);
 
-  return validNumbers.length > 0 ? Math.max(...validNumbers) : 0;
+  return validNumbers.length > 0 ? Math.min(...validNumbers) : 0;
 };
 
 /**
- * Очищає текст від Markdown/HTML тегів та нормалізує переноси рядків для Instagram
+ * Очищає опис від службового сміття постачальників, HTML/Markdown тегів та нормалізує переноси
  */
 const cleanCaptionForInstagram = (text: string): string => {
   return text
-    // Видаляємо випадкові Markdown зірочки (**заголовок** -> заголовок)
+    // Видаляємо Markdown зірочки
     .replace(/\*\*(.*?)\*\*/g, "$1")
     .replace(/\*(.*?)\*/g, "$1")
     .replace(/__(.*?)__/g, "$1")
     // Видаляємо HTML-теги
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<[^>]*>/g, "")
-    // Розкручуємо подвійно заекрановані переноси рядків
+    // Розкручуємо \\n
     .replace(/\\n/g, "\n")
     // Видаляємо можливі вступні фрази від ШІ
     .replace(/^(Ось|Привіт|Готово|Ваш пост|Тримай|Згенеровано).*\n?/i, "")
-    // Обмежуємо кількість підряд йдучих порожніх рядків до двох
+    // Підстраховка: програмно видаляємо рядки зі сміттям постачальника, якщо ШІ їх пропустив
+    .split("\n")
+    .filter((line) => {
+      const l = line.toLowerCase();
+      return (
+        !l.includes("менеджер") &&
+        !l.includes("crm") &&
+        !l.includes("заміри в коментарях") &&
+        !l.includes("фото файлом") &&
+        !l.includes("таблиця наявності") &&
+        !l.includes("дроп") &&
+        !l.includes("опт")
+      );
+    })
+    .join("\n")
+    // Ограничуємо підряд йдучі порожні рядки
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 };
@@ -74,36 +92,46 @@ export const getAIRewrite = async (
   const userPrompt = settings?.custom_prompt ?? null;
 
   const originalPrice = extractOriginalPrice(originalText);
+  // Автоматично додаємо націнку +299 грн
+  const finalPrice = originalPrice > 0 ? originalPrice + MARGIN_UAH : 0;
   const finalPriceStr =
-    originalPrice > 0
-      ? `${originalPrice + 299} ГРН`
-      : "ціну уточнюйте у Дірект";
+    finalPrice > 0 ? `${finalPrice} ГРН` : "ціну уточнюйте у Дірект";
 
   const systemBase = userPrompt
-    ? `Ти SMM-спеціаліст. Твоє завдання оформити пост за правилами: "${userPrompt}"`
+    ? `Ти SMM-спеціаліст. Оформи пост за правилами: "${userPrompt}"`
     : `Ти професійний SMM-копірайтер бренду одягу та аксесуарів BaryLux.`;
 
   const finalInstructions = `
 ${systemBase}
 
-СУВОРІ ПРАВИЛА ФОРМАТУВАННЯ ДЛЯ INSTAGRAM (ВИКОНУВАТИ БЕЗЗАПЕРЕЧНО):
+СУВОРІ ПРАВИЛА ФОРМАТУВАННЯ ТА ОЧИЩЕННЯ (ВИКОНУВАТИ БЕЗЗАПЕРЕЧНО):
 
-1. ЖОДНОГО MARKDOWN ТА HTML! ЗАБОРОНЕНО використовувати "**", "*", "_", "<b>", "<i>". Instagram показує їх як брудний текст!
-2. НАЗВА ТОВАРУ: Перший рядок має бути БРЕНД І НАЗВА ТОВАРУ ВЕРХНІМ РЕГІСТРОМ (наприклад: BURBERRY ФУТБОЛКИ). Жодних зірочок чи тегів.
-3. ХАРАКТЕРИСТИКИ: Кожен пункт списку починай СУВОРО зі спецсимволу "▪":
+1. **ЦІНА З НАЦІНКУ**: Твоя ЄДИНА ціна для поста — **${finalPriceStr}**.
+   - Повністю ЗАБОРОНЕНО використовувати вихідні ціни постачальника.
+   - Слово "ДРОП", "ОПТ", "ДРОП ЦІНА" КАТЕГОРИЧНО ЗАБОРОНЕНО. Виводь ТІЛЬКИ рядок: 💰 ${finalPriceStr}
+
+2. **ПОВНЕ ВИДАЛЕННЯ СМІТТЯ ПОСТАЧАЛЬНИКА**:
+   - Повністю ВИДАЛИ рядки про менеджера (✏️ МЕНЕДЖЕР, контакти Telegram тощо).
+   - Повністю ВИДАЛИ згадки CRM, таблиць наявності (✍️ ТАБЛИЦЯ НАЯВНОСТІ В CRM).
+   - Повністю ВИДАЛИ фрази типу "Фото файлом та заміри в коментарях👇".
+   - Видали всі телеграм-посилання, @юзернейми, номери телефонів та службові примітки.
+
+3. **ЖОДНОГО MARKDOWN ТА HTML**: НІЯКИХ "**", "*", "<b>", "<i>". Instagram їх не підтримує!
+
+4. **ФОРМАТ ПОСТА (СУВОРО ЗА ШАБЛОНОМ)**:
+   [БРЕНД І НАЗВА ТОВАРУ ВЕРХНІМ РЕГІСТРОМ]
+
    ▪ Матеріал: [Матеріал]
    ▪ Розміри: [Розміри]
    ▪ Деталі: [Деталі/Опис]
-4. ЦІНА: Рядок ціни має бути СУВОРО у форматі:
+
    💰 ${finalPriceStr}
-5. ЗАКЛИК ДО ДІЇ:
+
    📫 Для замовлення пишіть у Дірект
-6. ФІЛЬТРАЦІЯ: Повністю видали посилання, @юзернейми, номери телефонів, згадки про опт/дроп та вихідну ціну постачальника.
-7. ХЕШТЕГИ: Наприкінці поста додай суворо ці хештеги через пробіл:
+
    #одягукраїна #інстамагазин #брендовийодяг #стильнийодяг #barylux #купитиодягукраїна
-   (і додай 3-4 додаткових релевантних хештеги).
-8. СТРУКТУРА: Між заголовком, списком, ціною, закликом та хештегами ОБО'ЯЗКОВО залишай ОДИН порожній рядок.
-9. ВІДПОВІДЬ: Повертай ТІЛЬКИ готовий текст поста. Без вступних фраз ("Ось ваш пост") та коментарів.
+
+5. **ВІДПОВІДЬ**: Видавай ТІЛЬКИ чистий текст поста. Без вступних фраз ("Ось готовий пост").
 `.trim();
 
   try {
@@ -113,7 +141,7 @@ ${systemBase}
         { role: "system", content: finalInstructions },
         { role: "user", content: originalText },
       ],
-      temperature: 0.2,
+      temperature: 0.1, // Низька температура для суворого дотримання ціни та інструкцій
     });
 
     const rawContent =
@@ -125,7 +153,6 @@ ${systemBase}
       err instanceof Error ? err.message : "Невідома помилка AI";
     console.error("🚨 AI Service error:", errorMessage);
 
-    // У разі падіння API очищаємо хоча б сирий текст від HTML/Markdown
     return cleanCaptionForInstagram(originalText);
   }
 };
