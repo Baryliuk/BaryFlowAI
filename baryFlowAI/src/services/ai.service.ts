@@ -12,57 +12,99 @@ const openai = new OpenAI({
 });
 
 /**
- * Покращений витяг ціни з урахуванням контексту (пошук біля маркерів 'ціна', 'грн', '$' або окремих чисел)
+ * Розумний витяг ціни з урахуванням фільтрації артикулів та розмірів
  */
 const extractOriginalPrice = (text: string): number => {
-  // Пошук чисел у контексті цінових слів
-  const priceRegex = /(?:ціна|вартість|коштує|грн|uah)?\s*[:\-]?\s*(\d{3,4})\s*(?:грн|uah)?/gi;
-  const matches: number[] = [];
+  // 1. Очищаємо текст від артикулів і кодів товару, щоб не зчитати "Арт 1200" як ціну
+  const cleanText = text.replace(/(?:арт|артикул|код)\s*[:\.\-]?\s*\d+/gi, "");
+
+  // 2. Пошук чисел біля цінових маркерів (ціна, вартість, грн, uah)
+  const explicitPriceRegex =
+    /(?:ціна|вартість|коштує|грн|uah|\$)\s*[:\-]?\s*(\d{3,4})|(\d{3,4})\s*(?:грн|uah|\$)/gi;
+  const explicitMatches: number[] = [];
 
   let match: RegExpExecArray | null;
-  while ((match = priceRegex.exec(text)) !== null) {
-    const val = Number(match[1]);
-    if (val >= 250 && val <= 3500) {
-      matches.push(val);
+  while ((match = explicitPriceRegex.exec(cleanText)) !== null) {
+    const val = Number(match[1] || match[2]);
+    if (val >= 250 && val <= 4000) {
+      explicitMatches.push(val);
     }
   }
 
-  if (matches.length === 0) {
-    // Фолбек: шукаємо будь-які числа у ціновому діапазоні
-    const rawNumbers = text.match(/\b\d{3,4}\b/g);
-    if (!rawNumbers) return 0;
-
-    const valid = rawNumbers.map(Number).filter((n) => n >= 250 && n <= 3500);
-    return valid.length > 0 ? Math.max(...valid) : 0;
+  if (explicitMatches.length > 0) {
+    return Math.max(...explicitMatches);
   }
 
-  return Math.max(...matches);
+  // 3. Фолбек: шукаємо будь-які окремі числа в розумному ціновому діапазоні
+  const rawNumbers = cleanText.match(/\b\d{3,4}\b/g);
+  if (!rawNumbers) return 0;
+
+  const validNumbers = rawNumbers
+    .map(Number)
+    .filter((n) => n >= 250 && n <= 4000);
+
+  return validNumbers.length > 0 ? Math.max(...validNumbers) : 0;
 };
 
-export const getAIRewrite = async (originalText: string, userId: number): Promise<string> => {
+/**
+ * Очищає текст від Markdown/HTML тегів та нормалізує переноси рядків для Instagram
+ */
+const cleanCaptionForInstagram = (text: string): string => {
+  return text
+    // Видаляємо випадкові Markdown зірочки (**заголовок** -> заголовок)
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/__(.*?)__/g, "$1")
+    // Видаляємо HTML-теги
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+    // Розкручуємо подвійно заекрановані переноси рядків
+    .replace(/\\n/g, "\n")
+    // Видаляємо можливі вступні фрази від ШІ
+    .replace(/^(Ось|Привіт|Готово|Ваш пост|Тримай|Згенеровано).*\n?/i, "")
+    // Обмежуємо кількість підряд йдучих порожніх рядків до двох
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+};
+
+export const getAIRewrite = async (
+  originalText: string,
+  userId: number
+): Promise<string> => {
   const settings = dbService.getSettings(userId);
   const userPrompt = settings?.custom_prompt ?? null;
 
   const originalPrice = extractOriginalPrice(originalText);
-  const finalPriceStr = originalPrice > 0 ? `${originalPrice + MARGIN_UAH} грн` : "уточнюйте у Direct";
+  const finalPriceStr =
+    originalPrice > 0
+      ? `${originalPrice + MARGIN_UAH} ГРН`
+      : "ціну уточнюйте у Дірект";
 
-const systemBase = userPrompt
-    ? `Ти SMM-спеціаліст. Твоє завдання оформити пост: "${userPrompt}"`
-    : `Ти топовий SMM преміальних магазинів. Стиль елітний, структура чітка.`;
+  const systemBase = userPrompt
+    ? `Ти SMM-спеціаліст. Твоє завдання оформити пост за правилами: "${userPrompt}"`
+    : `Ти професійний SMM-копірайтер бренду одягу та аксесуарів BaryLux.`;
 
   const finalInstructions = `
 ${systemBase}
 
-### СУВОРІ ТЕХНІЧНІ ПРАВИЛА (ВИКОНУВАТИ БЕЗЗАПЕРЕЧНО):
-1. **ФОРМАТ ВІДПОВІДІ**: Видавай ТІЛЬКИ текст поста. ЗАБОРОНЕНО будь-які вступні фрази ("Ось ваш пост", "Я виправив ціну"). Починай одразу з назви.
-2. **ЦІНА ТОВАРУ**: Твоя єдина ціна — **${finalPriceStr}**. ЗАБОРОНЕНО використовувати ціни з вхідного тексту. 
-3. **МОВА ТА ГРАМАТИКА**: Тільки правильна українська! Слідкуй за родами (Жіноче плаття, чоловіче худі).
-4. **ФІЛЬТРАЦІЯ**: Видали всі посилання, @юзернейми та згадки про дроп/опт.
-5. **ОБОВ'ЯЗКОВІ ХЕШТЕГИ**: В самому кінці додай:
-#barylux #одягукраїна #купитиодягукраїна #інстамагазин #стильнийодяг #чоловічийодяг #стильнийодяг
-+ додай 3-4 релевантних до товару.
+СУВОРІ ПРАВИЛА ФОРМАТУВАННЯ ДЛЯ INSTAGRAM (ВИКОНУВАТИ БЕЗЗАПЕРЕЧНО):
 
-6. **ВІЗУАЛ**: Назва жирним КАПСОМ (через **), характеристики через ▫️.
+1. ЖОДНОГО MARKDOWN ТА HTML! ЗАБОРОНЕНО використовувати "**", "*", "_", "<b>", "<i>". Instagram показує їх як брудний текст!
+2. НАЗВА ТОВАРУ: Перший рядок має бути БРЕНД І НАЗВА ТОВАРУ ВЕРХНІМ РЕГІСТРОМ (наприклад: BURBERRY ФУТБОЛКИ). Жодних зірочок чи тегів.
+3. ХАРАКТЕРИСТИКИ: Кожен пункт списку починай СУВОРО зі спецсимволу "▪":
+   ▪ Матеріал: [Матеріал]
+   ▪ Розміри: [Розміри]
+   ▪ Деталі: [Деталі/Опис]
+4. ЦІНА: Рядок ціни має бути СУВОРО у форматі:
+   💰 ${finalPriceStr}
+5. ЗАКЛИК ДО ДІЇ:
+   📫 Для замовлення пишіть у Дірект
+6. ФІЛЬТРАЦІЯ: Повністю видали посилання, @юзернейми, номери телефонів, згадки про опт/дроп та вихідну ціну постачальника.
+7. ХЕШТЕГИ: Наприкінці поста додай суворо ці хештеги через пробіл:
+   #одягукраїна #інстамагазин #брендовийодяг #стильнийодяг #barylux #купитиодягукраїна
+   (і додай 3-4 додаткових релевантних хештеги).
+8. СТРУКТУРА: Між заголовком, списком, ціною, закликом та хештегами ОБО'ЯЗКОВО залишай ОДИН порожній рядок.
+9. ВІДПОВІДЬ: Повертай ТІЛЬКИ готовий текст поста. Без вступних фраз ("Ось ваш пост") та коментарів.
 `.trim();
 
   try {
@@ -72,23 +114,19 @@ ${systemBase}
         { role: "system", content: finalInstructions },
         { role: "user", content: originalText },
       ],
-      temperature: 0.3,
+      temperature: 0.2,
     });
 
-    let content = res.choices[0]?.message?.content?.trim() ?? originalText;
+    const rawContent =
+      res.choices[0]?.message?.content?.trim() ?? originalText;
 
-    // Видаляємо випадкові вступні фрази від ШІ, якщо вони все ж проскочили
-    if (/^(Ось|Привіт|Готово|Ваш пост)/i.test(content)) {
-      const firstLineBreak = content.indexOf("\n");
-      if (firstLineBreak !== -1) {
-        content = content.substring(firstLineBreak + 1).trim();
-      }
-    }
-
-    return content;
+    return cleanCaptionForInstagram(rawContent);
   } catch (err: unknown) {
-    const errorMessage = err instanceof Error ? err.message : "Невідома помилка AI";
+    const errorMessage =
+      err instanceof Error ? err.message : "Невідома помилка AI";
     console.error("🚨 AI Service error:", errorMessage);
-    return originalText;
+
+    // У разі падіння API очищаємо хоча б сирий текст від HTML/Markdown
+    return cleanCaptionForInstagram(originalText);
   }
 };
