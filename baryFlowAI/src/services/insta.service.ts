@@ -126,12 +126,19 @@ export const postCarousel = async (
   // --- 2. КАРУСЕЛЬ ---
   console.log(`🎠 Створюємо ${photoUrls.length} контейнерів паралельно для @${user.username}...`);
 
+  // 1. Створюємо дочірні контейнери для кожного фото
   const itemIds = await Promise.all(
     photoUrls.map((url) =>
       createContainer(publishUrl, { image_url: url, is_carousel_item: true }, user.token)
     )
   );
 
+  // 2. КРИТИЧНО: Чекаємо, поки Meta обробить УСІ 10 фото (статус FINISHED)
+  await Promise.all(
+    itemIds.map((id) => waitUntilReady(id, user.token))
+  );
+
+  // 3. Тільки тепер створюємо батьківський контейнер каруселі
   const carouselId = await createContainer(
     publishUrl,
     {
@@ -142,8 +149,10 @@ export const postCarousel = async (
     user.token
   );
 
+  // 4. Чекаємо готовності самого контейнера каруселі
   await waitUntilReady(carouselId, user.token);
 
+  // 5. Публікуємо
   await axios.post(
     publishFinalUrl,
     { creation_id: carouselId, access_token: user.token },
