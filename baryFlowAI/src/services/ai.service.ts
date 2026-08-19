@@ -3,7 +3,7 @@ import { CONFIG } from "../config/env";
 import { dbService } from "./db.service";
 
 const MARGIN_UAH = 299;
-const REQUEST_TIMEOUT_MS = 20_000;
+const REQUEST_TIMEOUT_MS = 45_000;
 
 const openai = new OpenAI({
   apiKey: CONFIG.NVIDIA_KEY,

@@ -19,7 +19,7 @@ export const sendDraft = async (
   ctx: Context,
   photos: string[],
   fileIds: string[],
-  formattedCaption: string // Приймаємо ВЖЕ готову ШІ-капчу
+  formattedCaption: string 
 ): Promise<void> => {
   try {
     const userId = ctx.from?.id;
