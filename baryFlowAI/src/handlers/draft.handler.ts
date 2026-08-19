@@ -1,6 +1,5 @@
 import { Context } from "telegraf";
 import { randomUUID } from "node:crypto";
-import { getAIRewrite } from "../services/ai.service";
 import { draftStore } from "../store/memory.store";
 
 const MAX_CAPTION_LENGTH = 1024;
@@ -20,7 +19,7 @@ export const sendDraft = async (
   ctx: Context,
   photos: string[],
   fileIds: string[],
-  rawCaption: string
+  formattedCaption: string // Приймаємо ВЖЕ готову ШІ-капчу
 ): Promise<void> => {
   try {
     const userId = ctx.from?.id;
@@ -34,30 +33,20 @@ export const sendDraft = async (
       return;
     }
 
-    ctx.sendChatAction("typing").catch(() => {});
-    const statusMsg = await ctx.reply("⏳ Створюю пост та роблю ШІ-рерайт...");
-
-    console.log(`📝 ШІ-рерайт для ${photos.length} фото (User: ${userId})...`);
-    const aiText = await getAIRewrite(rawCaption, userId);
-
-    // Захист від колізій при одночасних запитах (Date.now() не гарантує унікальності)
+    // Захист від колізій при одночасних запитах
     const draftId = randomUUID();
-    draftStore.set(draftId, { photos, fileIds, caption: aiText });
+    
+    // Зберігаємо вже оброблений ШІ-текст у store
+    draftStore.set(draftId, { photos, fileIds, caption: formattedCaption });
 
-    // Екрануємо ШІ-текст, щоб уникнути помилок синтаксису Telegram HTML
-    const safeAiText = escapeHtml(aiText);
+    // Екрануємо спецсимволи для безпечного відображення в Telegram
+    const safeText = escapeHtml(formattedCaption);
 
-    // Точний розрахунок обрізки з урахуванням довжини хедера
     const maxTextLength = MAX_CAPTION_LENGTH - HEADER_TEXT.length;
     const finalDescription =
-      safeAiText.length > maxTextLength
-        ? safeAiText.slice(0, maxTextLength - 3) + "..."
-        : safeAiText;
-
-    // Видаляємо тимчасове повідомлення "завантаження", щоб не засмічувати чат
-    if (statusMsg) {
-      ctx.deleteMessage(statusMsg.message_id).catch(() => {});
-    }
+      safeText.length > maxTextLength
+        ? safeText.slice(0, maxTextLength - 3) + "..."
+        : safeText;
 
     await ctx.replyWithPhoto(fileIds[0], {
       caption: `${HEADER_TEXT}${finalDescription}`,

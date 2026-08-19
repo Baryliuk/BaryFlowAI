@@ -2,7 +2,7 @@ import { Context } from "telegraf";
 import { Message, Update } from "telegraf/types";
 import { albumCache } from "../store/memory.store";
 import { sendDraft } from "./draft.handler";
-import { getAIRewrite } from "../services/ai.service"; // 1. Додано сервіс ШІ
+import { getAIRewrite } from "../services/ai.service"; 
 
 export interface AlbumItem {
   messageId: number;
